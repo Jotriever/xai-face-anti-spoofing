@@ -1,199 +1,286 @@
 # 🛡️ Face Anti-Spoofing Project
 > **멀티태스크 학습을 활용한 얼굴 위조 판별 및 공격 유형 분류 시스템**
 
-본 프로젝트는 보안 시스템의 취약점인 '얼굴 위조 공격(Print, Replay)'을 탐지하기 위해 **CelebA-Spoof 데이터셋**을 분석하고, 주파수(FFT) 및 선명도(Laplacian) 수치를 기반으로 한 하이브리드 탐지 모델을 구축하는 것을 목표로 합니다.
+본 프로젝트는 보안 시스템의 취약점인 '얼굴 위조 공격(Print, Replay, Mask)'을 탐지하기 위해 **CelebA-Spoof 데이터셋**을 분석하고, 멀티태스크 MobileNetV2와 3계층 XAI 파이프라인을 구축하는 것을 목표로 합니다.
 
 ## 🛠️ 개발 환경
-- **Environment:** Google Colab
+- **Environment:** Google Colab (T4 GPU)
 - **Language:** Python 3.x
-- **Libraries:** OpenCV, NumPy, Matplotlib, Kaggle API, PyTorch
-- **Dataset:** [CelebA-Spoofing (Kaggle)](https://www.kaggle.com/datasets/mabdullahsajid/celeba-spoofing)
+- **Libraries:** TensorFlow 2.x, OpenCV, NumPy, Matplotlib, Kaggle API
+- **Dataset:** [CelebA-Spoof (Kaggle)](https://www.kaggle.com/datasets/mabdullahsajid/celeba-spoofing)
 
 ---
 
-## 📅 작업 단위 활동 로그 (4/29 ~ 5/7)
+## 📊 현재 성능 요약
+
+| 모델 | Binary Acc | Spoof Type Acc | 비고 |
+|------|-----------|---------------|------|
+| 멀티태스크 MobileNetV2 | **96%** | **80%** | 최종 판정 모델 |
+| 픽셀 단독 (FFT+Laplacian) | 50.3% | — | 판정 불가, XAI 전용 |
+| CNN + Pixel 앙상블 실험 | 98.67% | — | CNN 단독과 동일 (Δ +0.00%p) |
+
+---
+
+## 🏗️ 시스템 아키텍처
+
+```
+[입력 이미지]
+     ↓
+[전처리] Haar Cascade 얼굴 크롭 → 224×224 / 정규화
+     ↓
+[MobileNetV2 멀티태스크]
+  ├─ Binary Head: Real/Fake (96%)
+  └─ Spoof Head: Live/Print/Replay/Mask (80%)
+     ↓
+[3계층 XAI 설명]
+  ├─ Layer 1: Grad-CAM (logit 기반) — 어디를 봤는가
+  ├─ Layer 2: 수치 앵커링 (FFT/Laplacian) — 얼마나 강한 신호인가
+  └─ Layer 3: LLaVA 자연어 캡션 — 왜 그렇게 판단했는가 (예정)
+     ↓
+[최종 출력] 판정 + 신뢰도 + Grad-CAM 히트맵 + 수치 근거
+```
+
+---
+
+## 📅 작업 단위 활동 로그
 
 ### [2026.04.29] 교수님 피드백 및 전략 수정
 
-#### 1. 주요 피드백 (Professor's Feedback)
-- **"Deep Learning의 한계 지적":** 단순 Binary Classification 모델은 판단 근거가 불분명한 'Black-box' 문제가 있음.
-- 현재의 CelebA-spoof는 설명 가능한 AI(XAI)를 제작하기에는 다소 무리가 있음
+#### 1. 주요 피드백
+- **"Black-box 문제":** 단순 Binary Classification은 판단 근거가 불분명
+- CelebA-Spoof는 XAI 제작에 다소 무리가 있음 → 하이브리드 수치 보강 방향 제안
 
-
-#### 2. 수정된 연구 방향 (Adjusted Research Plan)
-교수님의 피드백을 바탕으로, 단순 모델 학습에서 '물리적 수치 분석 기반의 하이브리드 탐지'로 프로젝트 방향을 고도화함.
-
-- **Hybrid Detection Logic:** - 딥러닝 모델(MobileNet/ResNet 등)과 수치 분석 알고리즘(FFT, Laplacian)을 결합.
-    - 모델이 놓칠 수 있는 미세한 위조 패턴을 주파수 도메인에서 이중 검증.
-- **Smart Sampling Strategy:**
-    - 전체 62만 장 데이터 중, 조명과 환경 변수가 통제된 `intra_test` 프로토콜 기반의 핵심 샘플 6만 장을 선별.
-    - 데이터 양보다 **데이터 질(Quality)**과 **설명 가능한 보안(Explainable AI)**에 집중.
-
-
-
-### [2026-05-07] 데이터 가용성 이슈 해결 및 메타데이터 파싱
-- **Issue:** 대용량 데이터셋(62만 장, 약 200GB)의 코랩 환경 내 전체 다운로드 불가 및 외부 링크 404 에러 발생.
-- **Solution:** 1. **Metadata-First 전략:** 전체 데이터를 받는 대신, `intra_test` 프로토콜의 `train_label.txt` 메타데이터를 우선적으로 확보.
-    2. **Selective Extraction:** 확보된 지도를 바탕으로 분석에 필요한 핵심 샘플(진짜 얼굴, 인쇄 공격, 화면 공격)만 선별적으로 다운로드하는 스마트 샘플링 파이프라인 구축.
-- **Result:** 분석용 데이터 `data/subset/` 구축 완료 및 수치 분석 준비 완료.
+#### 2. 수정된 연구 방향
+- **Hybrid Detection:** 딥러닝(MobileNetV2) + 수치 분석(FFT, Laplacian) 결합
+- **Smart Sampling:** `intra_test` 프로토콜 기반 핵심 샘플 6,000장 선별
+- **Explainable AI:** 판정 근거를 수치와 시각화로 설명하는 3계층 XAI 파이프라인
 
 ---
 
-## 🔬 핵심 분석 논리 (Work in Progress)
+### [2026-05-07] 데이터 가용성 이슈 해결 및 메타데이터 파싱
 
-위조 공격의 물리적 특성을 포착하기 위해 다음 두 가지 수치 앵커를 사용:
-
-1. **FFT (Fast Fourier Transform):** - **진짜 얼굴:** 자연스러운 저주파 성분이 강함.
-    - **위조 공격:** 인쇄물의 망점이나 디스플레이의 격자 무늬로 인해 특정 고주파 영역에서 비정상적인 에너지 검출.
-2. **Laplacian Variance:**
-    - 재촬영 및 인쇄 과정에서 발생하는 경계면의 뭉개짐(Blurring)을 선명도 수치로 정량화.
+- **Issue:** 62만 장(200GB) 전체 다운로드 불가, 외부 링크 404 에러
+- **Solution:** `train_label.txt` 메타데이터 우선 확보 → 선택적 다운로드 파이프라인 구축
+- **Result:** `data/subset/` 분석용 데이터 구축 완료
 
 ---
 
 ### [2026-05-11] 공격 유형별 수치 탐색 및 샘플 검증
 
-#### 1. Spoof Type 매핑 확정
-- `train_label.json` 파싱을 통해 전체 11개 타입(0~10) 분포 확인
-- 샘플 이미지 육안 검증으로 실제 타입 매핑 확정:
+#### Spoof Type 매핑 확정
 
 | Type | 공격 유형 |
-|---|---|
+|------|----------|
 | 0 | Live |
 | 1, 2, 6, 8 | Print (인쇄 사진) |
 | 3, 5, 7 | Replay (화면 재촬영) |
 | 4, 9 | Paper Cut (오려낸 마스크) |
 | 10 | 3D Mask (Toy) |
 
-#### 2. 카테고리별 샘플 구축
-- Kaggle API `-f` 옵션 기반 선택적 다운로드 파이프라인 완성
-- `live` / `print` / `replay` / `toy` 각 5장씩 총 20장 수집
-- 저장 경로: `./samples/{category}/`
-
-#### 3. FFT + Laplacian 수치 탐색 결과
+#### FFT + Laplacian 예비 탐색 결과 (20장)
 
 | 카테고리 | FFT 고주파 에너지 | Laplacian 분산 |
-|---|---|---|
+|---------|----------------|--------------|
 | Live | 645 | 350 |
 | Print | 800 | 395 |
-| **Replay** | **475** | **135** |
-| Toy | 1490 | 1420 |
+| Replay | 475 | 135 |
+| Mask | 1490 | 1420 |
 
-- **핵심 발견:** Replay Attack이 FFT·Laplacian 두 지표 모두에서 최저값 → 화면 재촬영 특유의 블러 패턴이 수치로 확인됨
-- **한계:** 3D Mask 샘플은 마스크를 손에 들고 촬영한 이미지 다수 포함 → 배경/엣지 노이즈로 수치 과대 측정. BB.txt 기반 얼굴 크롭 적용 시 개선 예상.
 ---
 
 ### [2026-05-12] Google Drive 연동 및 서브셋 다운로드 파이프라인 구축
 
-#### 1. Google Drive 영구 연동
-- 기존 문제: 데이터를 `/content/`에 저장하여 런타임 재시작 시 초기화되는 문제 발생
-- 해결: `BASE = '/content/drive/MyDrive/face-anti-spoofing'` 경로 고정으로 데이터 영구 유지
-- `kaggle.json` Drive에 저장 → 이후 런타임 재시작 시 재업로드 불필요
-
-#### 2. 서브셋 다운로드 파이프라인 완성 (`03_subset_download.ipynb`)
-- `train_label.json` 기반 Spoof Type별 경로 추출 자동화
+- `BASE = '/content/drive/MyDrive/face-anti-spoofing'` 경로 고정으로 데이터 영구 유지
 - 카테고리별 균형 샘플링 (random.seed(42) 고정)
-- 런타임 끊겨도 이어받기 가능 (이미 받은 파일 자동 스킵)
 
-#### 3. 중간발표용 서브셋 구축 완료
-- 전략: 6만장 전체 대신 중간발표용 6,000장 우선 확보 → 최종발표 전 확장
-- 카테고리별 1,500장 × 4 = 총 6,000장
+#### 중간발표용 서브셋 구축 완료
 
 | 카테고리 | 장수 | Spoof Type |
-|----------|------|------------|
-| live     | 1,500 | Type 0 |
-| print    | 1,500 | Type 1, 2, 6, 8 |
-| replay   | 1,500 | Type 3, 5, 7 |
-| mask     | 1,500 | Type 4, 9, 10 |
+|---------|------|-----------|
+| live | 1,500 | Type 0 |
+| print | 1,500 | Type 1, 2, 6, 8 |
+| replay | 1,500 | Type 3, 5, 7 |
+| mask | 1,500 | Type 4, 9, 10 |
 
-### [2026-05-12] RAM 부족 이슈 및 MTCNN → Haar Cascade 전환
+---
 
-#### 1. 문제 상황
-- **증상:** Cell 3 실행 시 커널 반복 재시작 → "사용 가능한 RAM을 모두 사용한 후 세션이 다운되었습니다"
-- **원인:** MTCNN이 이미지 한 장 처리 시 약 500MB~1GB RAM 점유
-  - 6,000장 배치 처리 시 Colab 환경 RAM(12GB) 초과
-  - GPU 할당 전 CPU 모드에서 더욱 심각
+### [2026-05-12] RAM 부족 이슈 — MTCNN → Haar Cascade 전환
 
-#### 2. 시도한 해결책
-- Colab Pro 결제 → T4 GPU 확보 → RAM 문제는 GPU와 무관하여 미해결
-- 런타임 재시작 반복 → 근본 해결 아님
+- **원인:** MTCNN이 이미지 1장당 500MB~1GB RAM 점유 → Colab 12GB 초과
+- **해결:** Haar Cascade(OpenCV 내장)로 전환 → RAM 1/10, 속도 10배 향상
+- **대가:** 정면 얼굴 검출 정확도 소폭 감소, 미검출 시 전체 이미지 224×224 리사이즈로 대체
 
-#### 3. 최종 해결: Haar Cascade로 교체
-- MTCNN(딥러닝 기반) → Haar Cascade(OpenCV 내장 고전 알고리즘)으로 전환
-- **장점:**
-  - RAM 사용량 1/10 수준으로 감소
-  - OpenCV 내장 → 별도 설치 불필요
-  - 처리 속도 10배 이상 빠름
-- **단점:**
-  - 정면 얼굴 검출 정확도 MTCNN 대비 낮음
-  - 미검출 시 전체 이미지를 224×224로 리사이즈하여 대체 처리
+---
 
-#### 4. 이후 확장안
-- 전처리 단계에서 메모리 효율이 모델 정확도보다 우선순위가 높을 수 있음
-- 중간발표용 MVP에서는 Haar Cascade로 충분, 최종발표 전 서버 환경에서 MTCNN 재적용 고려
+### [2026-05-12] 픽셀 모듈 실험 및 구조적 문제점 점검
 
---- 
-
-### [2026-05-12] 픽셀 모듈 실험 결과 및 구조적 문제점 점검
-
-#### 1. 픽셀 모듈 단독 성능 (6,000장 기준)
+#### 픽셀 단독 성능 (6,000장)
 
 | 카테고리 | Laplacian 평균 | FFT 평균 |
-|----------|---------------|---------|
-| Live     | 383.2         | 1134.1  |
-| Print    | 318.4         | 1042.3  |
-| Replay   | 319.2         | 944.8   |
-| Mask     | 480.1         | 1134.6  |
+|---------|--------------|---------|
+| Live | 383.2 | 1134.1 |
+| Print | 318.4 | 1042.3 |
+| Replay | 319.2 | 944.8 |
+| Mask | 480.1 | 1134.6 |
 
 - **픽셀 단독 Accuracy: 50.3% (랜덤 수준)**
-- FAR: 49.6% / FRR: 50.0%
-- **원인:** 카테고리 간 수치 분포가 겹쳐있어 단순 임계값으로 구분 불가
-- **교훈:** 20장 예비 분석 결과와 6,000장 결과가 크게 달랐음 → 소규모 샘플의 한계 확인
+- **교훈:** 카테고리 간 수치 분포가 겹쳐 단순 임계값으로 구분 불가
 
-#### 2. 예비 분석(20장) vs 전체(6,000장) 비교
+#### 트러블슈팅 목록 (TS)
 
-| 카테고리 | FFT (예비) | FFT (전체) | Laplacian (예비) | Laplacian (전체) |
-|----------|-----------|------------|-----------------|-----------------|
-| Live     | 645       | 1134       | 350             | 383             |
-| Print    | 800       | 1042       | 395             | 318             |
-| Replay   | 475       | 944        | 135             | 319             |
-| Mask     | 1490      | 1134       | 1420            | 480             |
+| ID | 문제 | 해결 |
+|----|------|------|
+| TS-01 | MTCNN RAM 초과 | Haar Cascade 전환 |
+| TS-02 | 데이터 불균형 (1:3) | class_weight 적용 |
+| TS-03 | Laplacian/FFT 스케일 차이 | 정규화 후 concat |
+| TS-04 | 픽셀 단독 판정 실패 (50.3%) | 역할 재정의 → XAI 수치 앵커링 전용 |
 
-#### 3. 구조적 문제점 점검 결과
+---
 
-| 문제점 | 내용 | 대응 방향 |
-|--------|------|-----------|
-| 픽셀이 판정에 미기여 | 픽셀 단독 50% → CNN 분류기만 동작 | 픽셀 피처를 CNN 입력에 concat (B안) |
-| 데이터 불균형 | Live 1,500 vs Spoof 4,500 = 1:3 | class_weight 적용 |
-| Haar Cascade 품질 | 미검출 시 전체 이미지 사용 → 배경 노이즈 | BB.txt 크롭으로 개선 (최종발표 전) |
-| 픽셀 피처 스케일 차이 | Laplacian/FFT 스케일 상이 | concat 전 정규화 필수 |
-| 테스트셋 누수 가능성 | 이미지 기준 분할 → 동일 인물 Train/Test 혼재 가능 | 최종발표 전 인물 기준 재분할 고려 |
+### [2026-05-12] Grad-CAM XAI 시각화 (중간발표)
 
-#### 4. 다음 전략: 픽셀 피처 CNN concat (B안)
-- Laplacian + FFT 수치를 정규화 후 CNN 공유 레이어에 concat
-- 진짜 하이브리드 구조로 재학습
-- 픽셀 수치는 판정 기여 + XAI 설명 근거 동시 활용
+#### 공격 유형별 Grad-CAM 판단 근거
 
---- 
-
-## [2026-05-12] Grad-CAM XAI 시각화
-
-모델이 왜 Fake로 판단했는지 얼굴 위 히트맵으로 시각화.
-
-### 공격 유형별 판단 근거
 | 공격 유형 | 집중 영역 | 판정 확률 |
-|-----------|-----------|-----------|
+|---------|---------|---------|
 | Print Attack | 눈·코 주변 반사광 패턴 | 98~100% |
 | Replay Attack | 이마·눈 픽셀 격자 패턴 | 74~100% |
 | 3D Mask Attack | 마스크 경계선 텍스처 | 100% |
 | Live (Real) | 히트맵 없음 (정상 판정) | 0% |
 
-### 한계 및 향후 과제
-- FAKE 100% 케이스에서 sigmoid 포화로 Grad-CAM 히트맵 미생성
-- logit 기반 Grad-CAM으로 개선 필요 (향후 과제)
+#### 중간발표 제출 결과물
+- 멀티태스크 MobileNetV2 (Binary 96% / Spoof Type 80%)
+- Grad-CAM 시각화 (공격 유형별 히트맵)
+- Streamlit MVP (기본 동작)
 
 ---
 
-## 🚀 향후 계획
-- [x] 공격 유형별 수치 임계값 탐색 완료 (예비 분석)
-- [ ] BB.txt 바운딩박스 기반 얼굴 크롭 후 수치 재측정
-- [ ] 6만 장 전체 서브셋 다운로드 및 멀티태스크 MobileNetV2 학습 시작
+### [2026-05-18] Phase 4-A: Logit 기반 Grad-CAM 개선
+
+#### 문제: Sigmoid 포화 (중간발표 이슈)
+- FAKE 100% 케이스에서 sigmoid 출력 기반 Grad-CAM → gradient ≈ 0 → 히트맵 미생성
+
+#### 해결: Logit 기반 Grad-CAM
+- sigmoid 직전 logit 값으로 gradient 계산 → FAKE 100% 케이스에서도 히트맵 정상 생성
+- sigmoid vs logit 정성 비교 완료 (안경/마스크/조명 케이스)
+
+#### 추가 구현: 수치 앵커링 선행 작업
+- `anchored_pixel_stats()`: Grad-CAM 활성 영역(상위 30%) 마스크에 국소적 FFT/Laplacian 측정
+- `src/gradcam_logit.py`로 모듈화 완료
+
+---
+
+### [2026-05-18] Phase 4-B: 하이브리드 앙상블 실험
+
+#### 실험 설계
+- CNN shared(256-d) 피처 + 픽셀 피처(3-d) concat → 앙상블 헤드 학습
+- 목적: 픽셀 피처가 CNN 판정을 보완하는지 검증
+
+#### 실험 결과 (동일 test set 300장 기준)
+
+| 모델 | Accuracy | ROC-AUC |
+|------|---------|--------|
+| CNN 피처만 (새 헤드) | 98.67% | 0.9961 |
+| CNN + Pixel concat | 98.67% | 0.9959 |
+| **Δ** | **+0.00%p** | **-0.0002** |
+
+#### 결론 (TS-04 최종 확정)
+> MobileNetV2가 학습 과정에서 주파수 도메인 패턴을 이미 256차원 표현 공간에 내재화했음을 확인.  
+> **픽셀 피처(FFT/Laplacian)는 판정에 사용하지 않고, Grad-CAM 활성 영역의 수치 앵커링(XAI Layer 2)으로만 활용.**
+
+---
+
+---
+
+### [2026-05-19] Phase 4-C: 공격 유형별 FAR 분석
+
+#### 최종 성능 결과
+
+| 지표 | 결과 | 목표 |
+|------|------|------|
+| Binary Accuracy | 99.67% | > 95% |
+| ROC-AUC | 1.0000 | > 0.95 |
+| FAR (전체 Spoof) | 0.44% | < 5% |
+| FRR (Live) | 0.00% | < 15% |
+| Print FAR | 1.33% | < 5% |
+| Replay FAR | 0.00% | < 10% |
+| Mask FAR | 0.00% | < 8% |
+| Replay→Mask 혼동 | 6.7% (5/75) | < 15% |
+
+#### 조명 조건별 FAR
+
+| 조명 | FAR |
+|------|-----|
+| Indoor-normal | 0.00% |
+| Indoor-strong | 0.00% |
+| Outdoor-normal | 0.00% |
+| Outdoor-strong | 0.00% |
+| Outdoor-extreme | 5.88% ⚠️ |
+
+#### 트러블슈팅
+
+| ID | 문제 | 해결 |
+|----|------|------|
+| TS-05 | test set 전처리 누락 — `/255`만 적용, ImageNet 정규화 없음 → FRR 46.7% | `(img/255 - IMAGENET_MEAN) / IMAGENET_STD` 추가 후 FRR 0.0% |
+| TS-06 | Replay→Mask 혼동 5건 — Laplacian 낮고(291 vs 319) FFT 고주파 에너지 높음(3370만 vs 3013만) | 블러 패턴이 원인으로 확인, 수치 앵커링 근거로 활용 |
+
+#### 주요 발견
+- Outdoor-extreme 조명 조건에서 FAR 5.88% — 극단적 야외 조명이 시스템 취약점
+- Replay→Mask 혼동 케이스는 픽셀 수치(Laplacian/FFT)로 원인 설명 가능 → XAI Layer 2 근거 확보
+- MobileNetV2가 ImageNet 정규화에 강하게 의존함을 확인 (전처리 불일치 시 성능 급락)
+
+#### 생성 결과물
+- `notebooks/09_far_analysis.ipynb`
+- `reports/phase4/roc_curve.png`
+- `reports/phase4/far_by_attack.png`
+- `reports/phase4/spoof_confusion_matrix.png`
+- `reports/phase4/replay_mask_confusion_pixel.png`
+- `reports/phase4/replay_mask_sample_grid.png`
+- `reports/phase4/far_cross_heatmap.png`
+
+
+## 🗂️ 디렉토리 구조
+
+```
+face-anti-spoofing/
+├── data/
+│   └── cropped/             # Haar Cascade 크롭 이미지 (live/print/replay/mask)
+├── src/
+│   ├── gradcam_logit.py     # Logit 기반 Grad-CAM + 수치 앵커링 (Phase 4-A)
+│   └── ensemble.py          # 수치 앵커링 전용 모듈 (Phase 4-B 결론)
+├── models/
+│   ├── stage1_best.h5       # Head 학습 결과
+│   └── stage2_best.h5       # Fine-tune 최종 모델
+├── reports/
+│   └── phase4/
+│       ├── 07_gradcam_logit_comparison.png
+│       ├── 08_ensemble_comparison.png
+│       └── 08_feature_importance.png
+├── notebooks/
+│   ├── 01_colob_setup.ipynb
+│   ├── 03_subset_download.ipynb
+│   ├── 04_preprocess_train.ipynb
+│   ├── 05_pixel_module.ipynb
+│   ├── 06_gradcam.ipynb
+│   ├── 07_gradcam_logit.ipynb   # Phase 4-A ✅
+│   └── 08_ensemble.ipynb        # Phase 4-B ✅
+│   ├── 09_far_analysis.ipynb    # Phase 4-C ✅
+└── app/
+    └── streamlit_app.py
+```
+
+---
+
+## 🚀 진행 현황
+
+| 페이즈 | 내용 | 상태 |
+|--------|------|------|
+| Phase 1 | 환경 구축 & 데이터 준비 | ✅ 완료 |
+| Phase 2 | 전처리 & 멀티태스크 모델 학습 | ✅ 완료 |
+| Phase 3 | 픽셀 모듈 & Grad-CAM & 중간발표 | ✅ 완료 |
+| Phase 4-A | Logit 기반 Grad-CAM 개선 | ✅ 완료 |
+| Phase 4-B | 하이브리드 앙상블 실험 | ✅ 완료 |
+| Phase 4-C | 공격 유형별 FAR 분석 | ✅ 완료 |
+| Phase 4-D | LLaVA 자연어 캡션 PoC | 🔲 예정 |
+| Phase 4-E | 3계층 XAI 통합 + Streamlit 완성 | 🔲 예정 |
+| Phase 5 | 최종 발표 준비 | 🔲 예정 |
