@@ -328,6 +328,6 @@ face-anti-spoofing/
 | Phase 4-A | Logit 기반 Grad-CAM 개선 | ✅ 완료 |
 | Phase 4-B | 하이브리드 앙상블 실험 | ✅ 완료 |
 | Phase 4-C | 공격 유형별 FAR 분석 | ✅ 완료 |
-| Phase 4-D | LLaVA 자연어 캡션 PoC | 🔲 예정 |
+| Phase 4-D | LLaVA 자연어 캡션 PoC | ✅ 완료 |
 | Phase 4-E | 3계층 XAI 통합 + Streamlit 완성 | 🔲 예정 |
 | Phase 5 | 최종 발표 준비 | 🔲 예정 |
