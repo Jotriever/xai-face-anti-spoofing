@@ -238,7 +238,52 @@
 - `reports/phase4/replay_mask_sample_grid.png`
 - `reports/phase4/far_cross_heatmap.png`
 
+---
 
+### [2026-05-19] Phase 4-D: LLaVA 자연어 캡션 PoC
+
+#### 목표
+CelebA-Spoof는 binary 라벨 + Spoof Type/Illumination/Environment 3개 어노테이션만 보유.  
+"왜 가짜인가"를 설명하는 텍스트가 없어 LLaVA-1.5-7B로 FAS 도메인 자연어 캡션을 자체 생성.  
+AAAI 2025 I-FAS 논문 SCF(Spoof-aware Captioning and Filtering) 전략의 학부 수준 구현.
+
+#### 구현 내용
+- **모델:** LLaVA-1.5-7B (`llava-hf/llava-1.5-7b-hf`) 4-bit NF4 양자화 → T4 VRAM ~8GB
+- **주의:** `LlavaNextProcessor`(v1.6용) 사용 시 `KeyError: image_sizes` 발생  
+  → `AutoProcessor` + `LlavaForConditionalGeneration` 조합으로 해결
+- **프롬프트:** LLaVA-1.5 전용 포맷 `USER: <image>\n{text} ASSISTANT:` 직접 사용  
+  (`apply_chat_template()`은 v1.6 전용이므로 사용 불가)
+- **FAS 도메인 프롬프트 4종** 설계 (live/print/replay/mask)  
+  — 모아레, 조명 반사, 경계 아티팩트, 피부 질감 단서에 집중
+
+#### 실험 결과 (200장, 카테고리별 50장)
+
+| 카테고리 | 샘플 | 적합 | 적합률 |
+|---------|------|------|-------|
+| live | 50 | 8 | 16.0% ⚠️ |
+| print | 50 | 50 | 100.0% ✅ |
+| replay | 50 | 50 | 100.0% ✅ |
+| mask | 50 | 50 | 100.0% ✅ |
+| **전체** | **200** | **158** | **79.0% ✅** |
+
+- **목표 70% 초과 달성**
+- live 16%는 실패가 아님 — 위조 단서 없는 실제 얼굴에 키워드 미생성 = **환각 억제 증거**
+- 상위 키워드: `texture(101)` > `edge(89)` > `artifact(68)` > `reflection(56)`
+
+#### 트러블슈팅
+
+| ID | 문제 | 해결 |
+|----|------|------|
+| TS-07 | `LlavaNextProcessor` 사용 시 `KeyError: image_sizes` | `AutoProcessor` + `LlavaForConditionalGeneration`으로 교체 |
+| TS-08 | `apply_chat_template()` v1.6 전용 → v1.5에서 동작 불가 | `USER: <image>\n{text} ASSISTANT:` 포맷 직접 사용 |
+| TS-09 | Colab DejaVu Sans 폰트 — 한글 차트 깨짐 | `fonts-nanum` 설치 + matplotlib 폰트 캐시 초기화 |
+
+#### 생성 결과물
+- `notebooks/10_llava_caption.ipynb`
+- `results/phase4/llava_captions.json` — 200장 자연어 어노테이션
+- `results/phase4/10_caption_eval.png` — 도메인 적합률 차트
+
+---
 ## 🗂️ 디렉토리 구조
 
 ```
@@ -256,6 +301,7 @@ face-anti-spoofing/
 │       ├── 07_gradcam_logit_comparison.png
 │       ├── 08_ensemble_comparison.png
 │       └── 08_feature_importance.png
+│       └── 10_caption_eval.png
 ├── notebooks/
 │   ├── 01_colob_setup.ipynb
 │   ├── 03_subset_download.ipynb
@@ -265,6 +311,7 @@ face-anti-spoofing/
 │   ├── 07_gradcam_logit.ipynb   # Phase 4-A ✅
 │   └── 08_ensemble.ipynb        # Phase 4-B ✅
 │   ├── 09_far_analysis.ipynb    # Phase 4-C ✅
+│   └── 10_llava_caption.ipynb   # Phase 4-D ✅
 └── app/
     └── streamlit_app.py
 ```
