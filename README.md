@@ -6,7 +6,7 @@
 ## 🛠️ 개발 환경
 - **Environment:** Google Colab (T4 GPU)
 - **Language:** Python 3.x
-- **Libraries:** TensorFlow 2.x, OpenCV, NumPy, Matplotlib, Kaggle API
+- **Libraries:** TensorFlow 2.x, OpenCV, NumPy, Matplotlib, Streamlit, Kaggle API
 - **Dataset:** [CelebA-Spoof (Kaggle)](https://www.kaggle.com/datasets/mabdullahsajid/celeba-spoofing)
 
 ---
@@ -15,29 +15,55 @@
 
 | 모델 | Binary Acc | Spoof Type Acc | 비고 |
 |------|-----------|---------------|------|
-| 멀티태스크 MobileNetV2 | **96%** | **80%** | 최종 판정 모델 |
+| 멀티태스크 MobileNetV2 | **96%** | **80%** | 기본 모델 |
+| 멀티태스크 MobileNetV2 (웹캠 Fine-tuning) | **97.6%** | **75.6%** | 웹캠 도메인 적응 모델 |
 | 픽셀 단독 (FFT+Laplacian) | 50.3% | — | 판정 불가, XAI 전용 |
 | CNN + Pixel 앙상블 실험 | 98.67% | — | CNN 단독과 동일 (Δ +0.00%p) |
+
+---
+
+## 🚀 실행 방법
+
+### Streamlit 앱 실행 (Colab + ngrok)
+
+```python
+!pip install pyngrok streamlit -q
+
+import subprocess, time
+from pyngrok import ngrok
+
+ngrok.set_auth_token("YOUR_NGROK_TOKEN")
+
+BASE = '/content/drive/MyDrive/face-anti-spoofing'
+subprocess.Popen(
+    ['streamlit', 'run', f'{BASE}/app/streamlit_app.py',
+     '--server.port', '8501',
+     '--server.headless', 'true',
+     '--server.enableCORS', 'false'],
+)
+time.sleep(4)
+print(ngrok.connect(8501))
+```
 
 ---
 
 ## 🏗️ 시스템 아키텍처
 
 ```
-[입력 이미지]
+[웹캠 입력 / 데모 이미지]
      ↓
 [전처리] Haar Cascade 얼굴 크롭 → 224×224 / 정규화
      ↓
-[MobileNetV2 멀티태스크]
-  ├─ Binary Head: Real/Fake (96%)
-  └─ Spoof Head: Live/Print/Replay/Mask (80%)
+[MobileNetV2 멀티태스크 (stage2_webcam.h5)]
+  ├─ Binary Head: Real/Fake (97.6%)
+  └─ Spoof Head: Live/Print/Replay/Mask (75.6%)
      ↓
-[3계층 XAI 설명]
+[3계층 XAI 설명 — src/xai_explainer.py]
   ├─ Layer 1: Grad-CAM (logit 기반) — 어디를 봤는가
   ├─ Layer 2: 수치 앵커링 (FFT/Laplacian) — 얼마나 강한 신호인가
-  └─ Layer 3: LLaVA 자연어 캡션 — 왜 그렇게 판단했는가 (예정)
+  └─ Layer 3: LLaVA 자연어 캡션 — 왜 그렇게 판단했는가
      ↓
-[최종 출력] 판정 + 신뢰도 + Grad-CAM 히트맵 + 수치 근거
+[Streamlit UI] 판정 배너 + Grad-CAM 히트맵 + 수치 비교 + XAI 텍스트
 ```
 
 ---
@@ -126,15 +152,6 @@
 - **픽셀 단독 Accuracy: 50.3% (랜덤 수준)**
 - **교훈:** 카테고리 간 수치 분포가 겹쳐 단순 임계값으로 구분 불가
 
-#### 트러블슈팅 목록 (TS)
-
-| ID | 문제 | 해결 |
-|----|------|------|
-| TS-01 | MTCNN RAM 초과 | Haar Cascade 전환 |
-| TS-02 | 데이터 불균형 (1:3) | class_weight 적용 |
-| TS-03 | Laplacian/FFT 스케일 차이 | 정규화 후 concat |
-| TS-04 | 픽셀 단독 판정 실패 (50.3%) | 역할 재정의 → XAI 수치 앵커링 전용 |
-
 ---
 
 ### [2026-05-12] Grad-CAM XAI 시각화 (중간발표)
@@ -172,10 +189,6 @@
 
 ### [2026-05-18] Phase 4-B: 하이브리드 앙상블 실험
 
-#### 실험 설계
-- CNN shared(256-d) 피처 + 픽셀 피처(3-d) concat → 앙상블 헤드 학습
-- 목적: 픽셀 피처가 CNN 판정을 보완하는지 검증
-
 #### 실험 결과 (동일 test set 300장 기준)
 
 | 모델 | Accuracy | ROC-AUC |
@@ -190,9 +203,7 @@
 
 ---
 
----
-
-### [2026-05-19] Phase 4-C: 공격 유형별 FAR 분석
+### [2026-05-18] Phase 4-C: 공격 유형별 FAR 분석
 
 #### 최종 성능 결과
 
@@ -217,44 +228,9 @@
 | Outdoor-strong | 0.00% |
 | Outdoor-extreme | 5.88% ⚠️ |
 
-#### 트러블슈팅
-
-| ID | 문제 | 해결 |
-|----|------|------|
-| TS-05 | test set 전처리 누락 — `/255`만 적용, ImageNet 정규화 없음 → FRR 46.7% | `(img/255 - IMAGENET_MEAN) / IMAGENET_STD` 추가 후 FRR 0.0% |
-| TS-06 | Replay→Mask 혼동 5건 — Laplacian 낮고(291 vs 319) FFT 고주파 에너지 높음(3370만 vs 3013만) | 블러 패턴이 원인으로 확인, 수치 앵커링 근거로 활용 |
-
-#### 주요 발견
-- Outdoor-extreme 조명 조건에서 FAR 5.88% — 극단적 야외 조명이 시스템 취약점
-- Replay→Mask 혼동 케이스는 픽셀 수치(Laplacian/FFT)로 원인 설명 가능 → XAI Layer 2 근거 확보
-- MobileNetV2가 ImageNet 정규화에 강하게 의존함을 확인 (전처리 불일치 시 성능 급락)
-
-#### 생성 결과물
-- `notebooks/09_far_analysis.ipynb`
-- `reports/phase4/roc_curve.png`
-- `reports/phase4/far_by_attack.png`
-- `reports/phase4/spoof_confusion_matrix.png`
-- `reports/phase4/replay_mask_confusion_pixel.png`
-- `reports/phase4/replay_mask_sample_grid.png`
-- `reports/phase4/far_cross_heatmap.png`
-
 ---
 
 ### [2026-05-19] Phase 4-D: LLaVA 자연어 캡션 PoC
-
-#### 목표
-CelebA-Spoof는 binary 라벨 + Spoof Type/Illumination/Environment 3개 어노테이션만 보유.  
-"왜 가짜인가"를 설명하는 텍스트가 없어 LLaVA-1.5-7B로 FAS 도메인 자연어 캡션을 자체 생성.  
-AAAI 2025 I-FAS 논문 SCF(Spoof-aware Captioning and Filtering) 전략의 학부 수준 구현.
-
-#### 구현 내용
-- **모델:** LLaVA-1.5-7B (`llava-hf/llava-1.5-7b-hf`) 4-bit NF4 양자화 → T4 VRAM ~8GB
-- **주의:** `LlavaNextProcessor`(v1.6용) 사용 시 `KeyError: image_sizes` 발생  
-  → `AutoProcessor` + `LlavaForConditionalGeneration` 조합으로 해결
-- **프롬프트:** LLaVA-1.5 전용 포맷 `USER: <image>\n{text} ASSISTANT:` 직접 사용  
-  (`apply_chat_template()`은 v1.6 전용이므로 사용 불가)
-- **FAS 도메인 프롬프트 4종** 설계 (live/print/replay/mask)  
-  — 모아레, 조명 반사, 경계 아티팩트, 피부 질감 단서에 집중
 
 #### 실험 결과 (200장, 카테고리별 50장)
 
@@ -266,54 +242,121 @@ AAAI 2025 I-FAS 논문 SCF(Spoof-aware Captioning and Filtering) 전략의 학�
 | mask | 50 | 50 | 100.0% ✅ |
 | **전체** | **200** | **158** | **79.0% ✅** |
 
-- **목표 70% 초과 달성**
 - live 16%는 실패가 아님 — 위조 단서 없는 실제 얼굴에 키워드 미생성 = **환각 억제 증거**
 - 상위 키워드: `texture(101)` > `edge(89)` > `artifact(68)` > `reflection(56)`
 
-#### 트러블슈팅
+---
 
-| ID | 문제 | 해결 |
-|----|------|------|
-| TS-07 | `LlavaNextProcessor` 사용 시 `KeyError: image_sizes` | `AutoProcessor` + `LlavaForConditionalGeneration`으로 교체 |
-| TS-08 | `apply_chat_template()` v1.6 전용 → v1.5에서 동작 불가 | `USER: <image>\n{text} ASSISTANT:` 포맷 직접 사용 |
-| TS-09 | Colab DejaVu Sans 폰트 — 한글 차트 깨짐 | `fonts-nanum` 설치 + matplotlib 폰트 캐시 초기화 |
+### [2026-05-19] Phase 4-E: 3계층 XAI 통합
 
-#### 생성 결과물
-- `notebooks/10_llava_caption.ipynb`
-- `results/phase4/llava_captions.json` — 200장 자연어 어노테이션
-- `results/phase4/10_caption_eval.png` — 도메인 적합률 차트
+#### 구현 내용
+- `src/xai_explainer.py` — 3계층 XAI 통합 파이프라인 모듈화
+  - `explain(img_bgr)` 단일 함수로 Grad-CAM + 수치 앵커링 + LLaVA 캡션 통합 반환
+  - `webcam=True` 플래그: 웹캠 입력 시 GaussianBlur + bilateralFilter 고주파 노이즈 보정
+
+#### XAI 출력 예시
+
+| 항목 | 내용 |
+|------|------|
+| verdict | REAL / FAKE |
+| spoof_prob | 0.0~1.0 |
+| heatmap_overlay | Grad-CAM 오버레이 이미지 |
+| anchor_stats | {laplacian, fft_high, fft_low} |
+| anchor_interp | 수치 해석 문자열 |
+| xai_text | 3계층 통합 자연어 설명 |
 
 ---
+
+### [2026-05-21] Phase 5: Streamlit 앱 v2 + 웹캠 Fine-tuning
+
+#### Streamlit 앱 v2
+- 웹캠 입력 (`st.camera_input`) + 데모 모드 라디오 버튼
+- 3단 레이아웃: Grad-CAM / 수치 앵커링 / 자연어 설명
+- 사이드바: 임계값 슬라이더 + FAR 대시보드
+
+#### 트러블슈팅 TS-07: 웹캠 오탐 문제 해결
+
+| ID | 문제 | 시도 | 결과 |
+|----|------|------|------|
+| TS-07-1 | 웹캠 Live → Replay Attack 오탐 | GaussianBlur(5,5) + bilateralFilter 보정 | 효과 미흡 |
+| TS-07-2 | 웹캠 Live → Replay Attack 오탐 | threshold 0.9 상향 | 효과 없음 |
+| **TS-07-3** | **웹캠 Live → Replay Attack 오탐** | **웹캠 Live 51장 수집 → Fine-tuning** | **✅ 해결** |
+
+**원인 분석:**
+- 웹캠 후처리(샤프닝/압축)로 Laplacian(601) / FFT(1237) 수치 튀어오름
+- 모델이 웹캠 도메인 이미지를 학습한 적 없는 도메인 갭(Domain Gap) 문제
+- 좋은 웹캠 장비로 교체해도 후처리 강도가 더 높아 오히려 악화될 수 있음
+
+**해결 과정:**
+1. `app/collect_app.py` — 웹캠 수집 전용 Streamlit 앱 제작
+2. 웹캠으로 Live 이미지 51장 수집 (다양한 각도/조명/표정)
+3. `stage2_best.h5` 기반 상위 30% 레이어만 unfreeze → lr=1e-5로 Fine-tuning
+4. Epoch 3에서 val_binary_accuracy 97.6% 달성 → Early stopping
+
+**Fine-tuning 검증 결과:**
+
+| 카테고리 | REAL 판정률 | 비고 |
+|---------|-----------|------|
+| webcam_live | 98.0% | ✅ 해결 |
+| existing_live | 75.0% | 도메인 차이로 소폭 감소 |
+| print | 0.0% | ✅ Spoof 탐지 유지 |
+| replay | 0.0% | ✅ Spoof 탐지 유지 |
+| mask | 0.0% | ✅ Spoof 탐지 유지 |
+
+#### 생성 결과물
+- `src/xai_explainer.py`
+- `app/streamlit_app.py` (v2, 웹캠 입력)
+- `app/collect_app.py` (웹캠 수집 전용)
+- `models/stage2_webcam.h5` (웹캠 Fine-tuning 모델)
+- `notebooks/13_webcam_finetune.ipynb`
+- `reports/phase5/webcam_finetune_curve.png`
+- `reports/phase5/webcam_samples.png`
+
+---
+
 ## 🗂️ 디렉토리 구조
 
 ```
 face-anti-spoofing/
 ├── data/
-│   └── cropped/             # Haar Cascade 크롭 이미지 (live/print/replay/mask)
+│   ├── cropped/             # Haar Cascade 크롭 이미지 (live/print/replay/mask)
+│   └── webcam_live/         # 웹캠 수집 Live 이미지 (Fine-tuning용)
 ├── src/
+│   ├── xai_explainer.py     # 3계층 XAI 통합 파이프라인 (Phase 4-E)
 │   ├── gradcam_logit.py     # Logit 기반 Grad-CAM + 수치 앵커링 (Phase 4-A)
 │   └── ensemble.py          # 수치 앵커링 전용 모듈 (Phase 4-B 결론)
 ├── models/
 │   ├── stage1_best.h5       # Head 학습 결과
-│   └── stage2_best.h5       # Fine-tune 최종 모델
+│   ├── stage2_best.h5       # Fine-tune 최종 모델 (CelebA-Spoof)
+│   └── stage2_webcam.h5     # 웹캠 도메인 Fine-tuning 모델 ← NEW
 ├── reports/
-│   └── phase4/
-│       ├── 07_gradcam_logit_comparison.png
-│       ├── 08_ensemble_comparison.png
-│       └── 08_feature_importance.png
-│       └── 10_caption_eval.png
+│   ├── phase4/
+│   │   ├── roc_curve.png
+│   │   ├── far_by_attack.png
+│   │   ├── spoof_confusion_matrix.png
+│   │   └── 10_caption_eval.png
+│   └── phase5/
+│       ├── webcam_finetune_curve.png  ← NEW
+│       └── webcam_samples.png         ← NEW
 ├── notebooks/
 │   ├── 01_colob_setup.ipynb
 │   ├── 03_subset_download.ipynb
 │   ├── 04_preprocess_train.ipynb
 │   ├── 05_pixel_module.ipynb
 │   ├── 06_gradcam.ipynb
-│   ├── 07_gradcam_logit.ipynb   # Phase 4-A ✅
-│   └── 08_ensemble.ipynb        # Phase 4-B ✅
-│   ├── 09_far_analysis.ipynb    # Phase 4-C ✅
-│   └── 10_llava_caption.ipynb   # Phase 4-D ✅
+│   ├── 07_gradcam_logit.ipynb
+│   ├── 08_ensemble.ipynb
+│   ├── 09_far_analysis.ipynb
+│   ├── 10_llava_caption.ipynb
+│   ├── 11_xai_integration.ipynb
+│   ├── 12_streamlit_app_v2.ipynb
+│   └── 13_webcam_finetune.ipynb      ← NEW
+├── results/
+│   └── phase4/
+│       └── llava_captions.json
 └── app/
-    └── streamlit_app.py
+    ├── streamlit_app.py              ← 웹캠 입력 v2
+    └── collect_app.py                ← 웹캠 수집 전용 ← NEW
 ```
 
 ---
@@ -329,5 +372,23 @@ face-anti-spoofing/
 | Phase 4-B | 하이브리드 앙상블 실험 | ✅ 완료 |
 | Phase 4-C | 공격 유형별 FAR 분석 | ✅ 완료 |
 | Phase 4-D | LLaVA 자연어 캡션 PoC | ✅ 완료 |
-| Phase 4-E | 3계층 XAI 통합 + Streamlit 완성 | 🔲 예정 |
-| Phase 5 | 최종 발표 준비 | 🔲 예정 |
+| Phase 4-E | 3계층 XAI 통합 + xai_explainer.py | ✅ 완료 |
+| Phase 5 | Streamlit v2 + 웹캠 Fine-tuning | ✅ 완료 |
+| Phase 6 | 최종 발표 준비 | 🔲 예정 |
+
+---
+
+## 🐛 전체 트러블슈팅 목록
+
+| ID | 문제 | 해결 |
+|----|------|------|
+| TS-01 | MTCNN RAM 초과 | Haar Cascade 전환 |
+| TS-02 | 데이터 불균형 (1:3) | class_weight 적용 |
+| TS-03 | Laplacian/FFT 스케일 차이 | 정규화 후 concat |
+| TS-04 | 픽셀 단독 판정 실패 (50.3%) | 역할 재정의 → XAI 수치 앵커링 전용 |
+| TS-05 | test set 전처리 누락 — FRR 46.7% | ImageNet 정규화 추가 후 FRR 0.0% |
+| TS-06 | Replay→Mask 혼동 5건 | 수치 앵커링 근거로 활용 |
+| TS-07 | LlavaNextProcessor KeyError | AutoProcessor로 교체 |
+| TS-08 | apply_chat_template() v1.5 비호환 | USER/ASSISTANT 포맷 직접 사용 |
+| TS-09 | 한글 폰트 깨짐 | fonts-nanum 설치 |
+| TS-10 | 웹캠 Live → Replay 오탐 (도메인 갭) | 웹캠 51장 수집 → Fine-tuning |
