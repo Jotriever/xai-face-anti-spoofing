@@ -16,7 +16,9 @@
 | 모델 | Binary Acc | Spoof Type Acc | 비고 |
 |------|-----------|---------------|------|
 | 멀티태스크 MobileNetV2 | **96%** | **80%** | 기본 모델 |
-| 멀티태스크 MobileNetV2 (웹캠 Fine-tuning) | **97.6%** | **75.6%** | 웹캠 도메인 적응 모델 |
+| 멀티태스크 MobileNetV2 (웹캠 Fine-tuning v1) | **97.6%** | **75.6%** | 웹캠 Live 51장 수집 |
+| 멀티태스크 MobileNetV2 (웹캠 Fine-tuning v2) | **96.2%** | **80.9%** | LCC FASD + 본인 251장, threshold=0.65 |
+| 멀티태스크 MobileNetV2 (웹캠 Fine-tuning v3) | **96.0%** | **78.8%** | 웹캠 공격 데이터 추가, threshold=0.75 ← **현재** |
 | 픽셀 단독 (FFT+Laplacian) | 50.3% | — | 판정 불가, XAI 전용 |
 | CNN + Pixel 앙상블 실험 | 98.67% | — | CNN 단독과 동일 (Δ +0.00%p) |
 
@@ -314,7 +316,132 @@ print(ngrok.connect(8501))
 
 ---
 
-## 🗂️ 디렉토리 구조
+### [2026-05-22] Phase 5-B: 웹캠 도메인 갭 심화 해결 및 Fine-tuning v2/v3
+
+#### 배경
+Phase 5에서 웹캠 Fine-tuning v1(51장) 적용 후 CelebA Live 탐지율이 75%로 하락하고, 공격 탐지율도 불안정한 문제 발생. 근본적인 재설계 필요.
+
+#### LCC FASD 데이터셋 도입 (Fine-tuning v2)
+
+**선택 이유:** 웹캠/모바일 촬영 Live 얼굴 포함 공개 데이터셋으로 단일 인물 편향 해소 목적
+
+| 항목 | 내용 |
+|------|------|
+| 출처 | Kaggle `faber24/lcc-fasd` |
+| 구성 | training/real 1223장, development/real 405장, evaluation/real 314장 |
+| 활용 | real 이미지 200장 추출 → `data/webcam_live/` 에 기존 51장과 통합 (총 251장) |
+
+**LCC FASD 수치 분포 확인:**
+
+| 카테고리 | Laplacian 평균 | FFT High 평균 |
+|---------|--------------|-------------|
+| CelebA Live | 383 | 1134 |
+| LCC FASD Real | 329 | 1032 |
+| 본인 웹캠 Live | 16 | 894 |
+
+> LCC FASD가 CelebA와 웹캠의 중간 도메인 역할 → 모델이 Laplacian 16~600 전 범위를 Live로 학습
+
+**Fine-tuning v2 전략:**
+
+| 항목 | v1 | v2 |
+|------|----|----|
+| 웹캠 Live | 51장 | 251장 (LCC 200 + 본인 51) |
+| CelebA Live | 1500장 (30:1 불균형) | 251장 (1:1 균형) |
+| 오버샘플링 | 없음 | Live:Fake = 1:1.4 |
+| unfreeze | 상위 30% | head만 (backbone 동결) |
+| LR | 1e-4 | 1e-3 (Phase A) |
+
+**Fine-tuning v2 결과 (threshold=0.65):**
+
+| 카테고리 | REAL% | FAKE% | 판정 |
+|---------|-------|-------|------|
+| webcam_live | 100% | 0% | ✅ |
+| CelebA_live | 91% | 9% | ✅ |
+| CelebA_print | 4% | 96% | ✅ |
+| CelebA_replay | 4% | 96% | ✅ |
+| CelebA_mask | 4% | 96% | ✅ |
+| FAKE+spoof_type=Live 모순 | **0건** | — | ✅ |
+
+---
+
+#### 웹캠 환경 공격 데이터 직접 수집 (Fine-tuning v3)
+
+**동기:** v2 모델에서 실제 웹캠으로 Replay Attack 테스트 시 탐지율 73%로 저조. CelebA-Spoof 기반 공격 이미지와 실제 웹캠 환경 공격 이미지 간 도메인 갭 존재.
+
+**수집 방법:**
+1. CelebA-Spoof real 이미지 중 선명한 50장 추출 → `data/print_targets/` 저장
+2. `app/collect_app.py` 수집 전용 Streamlit 앱으로 웹캠 직접 촬영
+   - Print Attack: 프린트 출력물을 웹캠 앞에 → 54장 수집
+   - Replay Attack: 모니터/핸드폰 화면을 웹캠 앞에 → 50장 수집
+
+**수집 데이터 수치 분포:**
+
+| 카테고리 | Laplacian 평균 | FFT 평균 |
+|---------|--------------|---------|
+| webcam_live | 16.3 | 894.4 |
+| webcam_print | 121.6 | 609.9 |
+| webcam_replay | 346.8 | 1041.4 |
+| CelebA_print | 254.0 | 931.8 |
+| CelebA_replay | 310.5 | 974.4 |
+
+**Fine-tuning v3 학습 데이터 구성:**
+
+| 카테고리 | 장수 | label |
+|---------|------|-------|
+| webcam_live (LCC+본인) | 251장 | Live |
+| CelebA_live | 251장 | Live (1:1 균형) |
+| webcam_print | 54장 | Print (신규) |
+| webcam_replay | 50장 | Replay (신규) |
+| CelebA_print | 300장 | Print |
+| CelebA_replay | 300장 | Replay |
+| CelebA_mask | 300장 | Mask |
+
+**Fine-tuning v3 결과 (threshold=0.75):**
+
+| 카테고리 | REAL% | FAKE% | 기준 | 판정 |
+|---------|-------|-------|------|------|
+| webcam_live | 96% | 4% | ≥95% | ✅ |
+| **webcam_print** | **0%** | **100%** | ≥90% | ✅ |
+| **webcam_replay** | **2%** | **98%** | ≥90% | ✅ |
+| CelebA_live | 96% | 4% | ≥85% | ✅ |
+| CelebA_print | 4% | 96% | ≥95% | ✅ |
+| CelebA_replay | 8% | 92% | ≥80% | ✅ |
+| CelebA_mask | 2% | 98% | ≥90% | ✅ |
+
+> **webcam_replay 73% → 98%로 대폭 개선** (웹캠 도메인 공격 데이터 직접 수집 효과)
+
+#### v2 → v3 개선 비교
+
+| 항목 | v2 | v3 |
+|------|----|----|
+| webcam_replay → FAKE | 73% ❌ | **98%** ✅ |
+| webcam_print → FAKE | 미측정 | **100%** ✅ |
+| webcam_live → REAL | 100% | 96% |
+| threshold | 0.65 | 0.75 |
+| 최종 모델 | stage2_webcam_v2.h5 | **stage2_webcam_v3.h5** |
+
+#### 주요 발견 및 교훈
+
+1. **도메인 갭은 같은 공격 유형 내에서도 존재** — CelebA Print ≠ 웹캠 Print
+2. **웹캠 환경 공격 데이터 직접 수집이 가장 효과적** — 데이터셋 탐색보다 직접 촬영이 빠름
+3. **FFT 후처리 필터의 한계** — Print/Replay FFT 분포가 거의 동일해 수치로 구분 불가
+4. **멀티태스크 모델 Fine-tuning 제약** — class_weight 미지원, backbone unfreeze 시 과적합
+5. **오버샘플링 비율(1:1.4)이 핵심** — 1:1은 공격 탐지 희생, 1:1.4에서 균형점 확보
+
+#### 생성 결과물
+- `models/stage2_webcam_v2.h5` — LCC FASD + 본인 웹캠 Fine-tuning
+- `models/stage2_webcam_v3.h5` — 웹캠 공격 데이터 추가 Fine-tuning ← **현재 사용**
+- `data/webcam_live/` — LCC FASD 200장 + 본인 51장 (총 251장)
+- `data/webcam_print/` — 웹캠 환경 Print 공격 54장
+- `data/webcam_replay/` — 웹캠 환경 Replay 공격 50장
+- `data/print_targets/` — 수집용 출력 이미지 50장
+- `notebooks/15_lcc_fasd_download.ipynb` — LCC FASD 다운로드
+- `notebooks/16_webcam_v2_finetune.ipynb` — Fine-tuning v2
+- `notebooks/17_run_app.ipynb` — Streamlit 앱 실행 전용
+- `notebooks/18_webcam_attack_collect_finetune.ipynb` — 공격 데이터 수집 + Fine-tuning v3
+- `src/xai_explainer.py` 업데이트 — threshold 0.75, v3 모델, Grad-CAM 얼굴 마스크
+
+---
 
 ```
 face-anti-spoofing/
@@ -326,9 +453,17 @@ face-anti-spoofing/
 │   ├── gradcam_logit.py     # Logit 기반 Grad-CAM + 수치 앵커링 (Phase 4-A)
 │   └── ensemble.py          # 수치 앵커링 전용 모듈 (Phase 4-B 결론)
 ├── models/
-│   ├── stage1_best.h5       # Head 학습 결과
-│   ├── stage2_best.h5       # Fine-tune 최종 모델 (CelebA-Spoof)
-│   └── stage2_webcam.h5     # 웹캠 도메인 Fine-tuning 모델 ← NEW
+│   ├── stage1_best.h5            # Head 학습 결과
+│   ├── stage2_best.h5            # Fine-tune 최종 모델 (CelebA-Spoof 원본)
+│   ├── stage2_webcam.h5          # 웹캠 Fine-tuning v1 (본인 51장)
+│   ├── stage2_webcam_v2.h5       # 웹캠 Fine-tuning v2 (LCC FASD + 본인 251장) ← NEW
+│   └── stage2_webcam_v3.h5       # 웹캠 Fine-tuning v3 (공격 데이터 추가) ← NEW ← 현재 사용
+├── data/
+│   ├── cropped/                  # Haar Cascade 크롭 이미지 (live/print/replay/mask 각 1500장)
+│   ├── webcam_live/              # 웹캠 Live (LCC FASD 200장 + 본인 51장 = 251장)
+│   ├── webcam_print/             # 웹캠 환경 Print 공격 (직접 수집 54장) ← NEW
+│   ├── webcam_replay/            # 웹캠 환경 Replay 공격 (직접 수집 50장) ← NEW
+│   └── print_targets/            # 수집용 출력 이미지 50장 ← NEW
 ├── reports/
 │   ├── phase4/
 │   │   ├── roc_curve.png
@@ -336,8 +471,8 @@ face-anti-spoofing/
 │   │   ├── spoof_confusion_matrix.png
 │   │   └── 10_caption_eval.png
 │   └── phase5/
-│       ├── webcam_finetune_curve.png  ← NEW
-│       └── webcam_samples.png         ← NEW
+│       ├── webcam_finetune_curve.png
+│       └── webcam_samples.png
 ├── notebooks/
 │   ├── 01_colob_setup.ipynb
 │   ├── 03_subset_download.ipynb
@@ -350,13 +485,17 @@ face-anti-spoofing/
 │   ├── 10_llava_caption.ipynb
 │   ├── 11_xai_integration.ipynb
 │   ├── 12_streamlit_app_v2.ipynb
-│   └── 13_webcam_finetune.ipynb      ← NEW
+│   ├── 13_webcam_finetune.ipynb
+│   ├── 15_lcc_fasd_download.ipynb               ← NEW
+│   ├── 16_webcam_v2_finetune.ipynb              ← NEW
+│   ├── 17_run_app.ipynb                         ← NEW (앱 실행 전용)
+│   └── 18_webcam_attack_collect_finetune.ipynb  ← NEW
 ├── results/
 │   └── phase4/
 │       └── llava_captions.json
 └── app/
-    ├── streamlit_app.py              ← 웹캠 입력 v2
-    └── collect_app.py                ← 웹캠 수집 전용 ← NEW
+    ├── streamlit_app.py     # 메인 앱 (업로드 + 웹캠, threshold=0.75, v3 모델)
+    └── collect_app.py       # 웹캠 공격 데이터 수집 전용 ← NEW
 ```
 
 ---
@@ -374,6 +513,7 @@ face-anti-spoofing/
 | Phase 4-D | LLaVA 자연어 캡션 PoC | ✅ 완료 |
 | Phase 4-E | 3계층 XAI 통합 + xai_explainer.py | ✅ 완료 |
 | Phase 5 | Streamlit v2 + 웹캠 Fine-tuning | ✅ 완료 |
+| Phase 5-B | 웹캠 도메인 갭 심화 해결 + 공격 데이터 수집 + Fine-tuning v3 | ✅ 완료 |
 | Phase 6 | 최종 발표 준비 | 🔲 예정 |
 
 ---
@@ -391,4 +531,10 @@ face-anti-spoofing/
 | TS-07 | LlavaNextProcessor KeyError | AutoProcessor로 교체 |
 | TS-08 | apply_chat_template() v1.5 비호환 | USER/ASSISTANT 포맷 직접 사용 |
 | TS-09 | 한글 폰트 깨짐 | fonts-nanum 설치 |
-| TS-10 | 웹캠 Live → Replay 오탐 (도메인 갭) | 웹캠 51장 수집 → Fine-tuning |
+| TS-10 | 웹캠 Live → Replay 오탐 (도메인 갭 v1) | 웹캠 51장 수집 → Fine-tuning v1 |
+| TS-11 | v1 fine-tuning 후 CelebA Live 75%로 하락 | LCC FASD 200장 + 오버샘플링 1:1.4 → v2 |
+| TS-12 | v2 fine-tuning 후 공격 탐지율 하락 (Print 81%, Replay 74%) | threshold 0.65 최적화로 전체 합격 |
+| TS-13 | 웹캠 환경 Replay/Print 오탐 (73%) | 웹캠 공격 이미지 직접 수집 → Fine-tuning v3 |
+| TS-14 | class_weight 멀티출력 모델 미지원 | sample_weight → 오버샘플링으로 대체 |
+| TS-15 | MobileNetV2 sub-model 구조 — backbone unfreeze 실패 | 레이어 직접 탐색으로 해결 |
+| TS-16 | Grad-CAM 배경/가장자리 활성화 | 얼굴 마스크 후처리 적용 (부분 해결) |
