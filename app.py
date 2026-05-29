@@ -64,9 +64,16 @@ def get_models():
 
 @st.cache_resource
 def get_cascade():
-    return cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    # Windows 로컬 환경 대응
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    if cascade.empty():
+        # 직접 경로 시도
+        import os
+        alt_path = os.path.join(os.path.dirname(cv2.__file__), 
+                                "data", "haarcascade_frontalface_default.xml")
+        cascade = cv2.CascadeClassifier(alt_path)
+    return cascade
 
 @st.cache_data
 def load_demo_meta():
