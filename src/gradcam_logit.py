@@ -57,3 +57,12 @@ def anchored_pixel_stats(img_bgr, mask):
     hfm = (Y-cy)**2 + (X-cx)**2 > r**2
     fft_energy = mag[hfm].mean() if hfm.any() else 0.0
     return {'laplacian': float(laplacian_var), 'fft_energy': float(fft_energy)}
+
+# src/xai_explainer.py — build_explanation()
+lap_diff = stats['laplacian'] - base['laplacian']             # Live 평균 대비
+if   lap_diff < -40: lines.append('질감 평탄 (선명도 낮음)')
+elif lap_diff >  40: lines.append('경계선 강조 (선명도 높음)')
+# spoof_type별 도메인 문장 결합
+if verdict == 'FAKE':
+    lines.append(SPOOF_EN_HINT[spoof_type_idx])
+# 예) Replay → "화면 재촬영 특유의 모아레 패턴 및 고주파 에너지 감소가 감지됩니다."
