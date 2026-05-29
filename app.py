@@ -64,15 +64,11 @@ def get_models():
 
 @st.cache_resource
 def get_cascade():
-    # Windows 로컬 환경 대응
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    cascade = cv2.CascadeClassifier(cascade_path)
+    path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier()
+    cascade.load(path)  # load() 방식으로 변경
     if cascade.empty():
-        # 직접 경로 시도
-        import os
-        alt_path = os.path.join(os.path.dirname(cv2.__file__), 
-                                "data", "haarcascade_frontalface_default.xml")
-        cascade = cv2.CascadeClassifier(alt_path)
+        raise RuntimeError(f"Cascade 로드 실패: {path}")
     return cascade
 
 @st.cache_data
