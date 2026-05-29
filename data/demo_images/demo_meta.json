@@ -1,0 +1,52 @@
+{
+  "01_webcam_live": {
+    "label": "본인 Live",
+    "dst": "/content/drive/MyDrive/face-anti-spoofing/data/demo_images/01_webcam_live.jpg",
+    "verdict": "REAL",
+    "spoof_prob": 0.004900843370705843,
+    "spoof_type_name": "Live (실제 얼굴)",
+    "laplacian": 265,
+    "fft_high": 697,
+    "llava_caption": "Model focused on forehead region. Texture: reduced sharpness (Lap=266), suppressed high-freq (FFT=697). No spoofing artifacts — live face."
+  },
+  "02_print_attack": {
+    "label": "Print Attack",
+    "dst": "/content/drive/MyDrive/face-anti-spoofing/data/demo_images/02_print_attack.jpg",
+    "verdict": "FAKE",
+    "spoof_prob": 0.9995560050010681,
+    "spoof_type_name": "Print Attack (인쇄 공격)",
+    "laplacian": 196,
+    "fft_high": 640,
+    "llava_caption": "Model focused on left cheek. Texture: reduced sharpness (Lap=196), low high-freq energy (FFT=641). Paper-based attack: flat texture and ink dot pattern."
+  },
+  "03_replay_attack": {
+    "label": "Replay Attack",
+    "dst": "/content/drive/MyDrive/face-anti-spoofing/data/demo_images/03_replay_attack.jpg",
+    "verdict": "FAKE",
+    "spoof_prob": 0.8784453272819519,
+    "spoof_type_name": "Replay Attack (화면 재촬영)",
+    "laplacian": 145,
+    "fft_high": 608,
+    "llava_caption": "Model focused on left cheek. Texture: very low sharpness (Lap=146), low high-freq energy (FFT=608). Screen replay: digital display interference pattern."
+  },
+  "04_mask_attack": {
+    "label": "Mask Attack",
+    "dst": "/content/drive/MyDrive/face-anti-spoofing/data/demo_images/04_mask_attack.jpg",
+    "verdict": "FAKE",
+    "spoof_prob": 0.978867769241333,
+    "spoof_type_name": "3D Mask (입체 마스크)",
+    "laplacian": 736,
+    "fft_high": 848,
+    "llava_caption": "Model focused on lower-right jaw. Texture: high edge contrast (Lap=737), suppressed high-freq (FFT=848). 3D mask: rigid boundary and synthetic texture inconsistency."
+  },
+  "05_celeba_live": {
+    "label": "CelebA Live (원본 도메인 유지 확인)",
+    "dst": "/content/drive/MyDrive/face-anti-spoofing/data/demo_images/05_celeba_live.jpg",
+    "verdict": "REAL",
+    "spoof_prob": 1.0534614292012634e-09,
+    "spoof_type_name": "Live (실제 얼굴)",
+    "laplacian": 217,
+    "fft_high": 1097,
+    "llava_caption": "[Template] The face appears natural with consistent skin texture and no visible artifacts."
+  }
+}

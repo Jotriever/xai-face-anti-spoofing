@@ -1,12 +1,6 @@
 """
-src/xai_explainer.py — Phase 4-E
+src/xai_explainer.py — Phase 4-E (v2)
 3계층 XAI 통합 파이프라인
-
-사용법:
-    from xai_explainer import explain, load_model_once
-    load_model_once()
-    result = explain(img_bgr)              # 일반 이미지
-    result = explain(img_bgr, webcam=True) # 웹캠 입력 (고주파 노이즈 보정)
 """
 
 import os, json, random
@@ -17,20 +11,20 @@ from pathlib import Path
 
 # ── 경로 설정 ─────────────────────────────────────────────
 BASE         = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH   = os.path.join(BASE, "models", "stage2_webcam.h5")
+MODEL_PATH   = os.path.join(BASE, "models", "stage2_webcam_v3.h5")
 CAPTION_JSON = os.path.join(BASE, "results", "phase4", "llava_captions.json")
 
 # ── 레이어 이름 ───────────────────────────────────────────
-TARGET_LAYER = "Conv_1"
-LOGIT_LAYER  = "binary"
-SPOOF_LAYER  = "spoof"
+TARGET_LAYER = 'Conv_1_bn'
+LOGIT_LAYER  = 'binary'
+SPOOF_LAYER  = 'spoof'
 
 # ── 전역 상태 ─────────────────────────────────────────────
 _model        = None
 _caption_db   = {}
 _caption_pool = {"live": [], "print": [], "replay": [], "mask": []}
 
-# ── 기준값 (Phase 3 실측) ─────────────────────────────────
+# ── 기준값 ────────────────────────────────────────────────
 ANCHOR_BASELINE = {
     "live":   {"laplacian": 383, "fft_high": 1134},
     "print":  {"laplacian": 318, "fft_high": 1042},
@@ -38,7 +32,6 @@ ANCHOR_BASELINE = {
     "mask":   {"laplacian": 480, "fft_high": 1134},
 }
 
-# ── 레이블 매핑 ───────────────────────────────────────────
 SPOOF_KO = {
     0: "Live (실제 얼굴)",
     1: "Print Attack (인쇄 공격)",
@@ -54,11 +47,10 @@ ILLUMINATION_NAMES = {0: "자연광", 1: "실내 형광등", 2: "역광", 3: "�
 ENVIRONMENT_NAMES  = {0: "실내", 1: "실외"}
 
 
-# ── 초기화 ────────────────────────────────────────────────
 def load_model_once(model_path=MODEL_PATH, caption_json=CAPTION_JSON):
     global _model, _caption_db, _caption_pool
     if _model is None:
-        _model = tf.keras.models.load_model(model_path)
+        _model = tf.keras.models.load_model(model_path, compile=False)
         print("✅ 모델 로드:", model_path)
     if not _caption_db and Path(caption_json).exists():
         with open(caption_json) as f:
@@ -71,36 +63,27 @@ def load_model_once(model_path=MODEL_PATH, caption_json=CAPTION_JSON):
             if cat in _caption_pool and caption:
                 _caption_pool[cat].append(caption)
         print("✅ 캡션 DB 로드:", len(_caption_db), "개")
-    elif not _caption_db:
-        print("⚠️  캡션 JSON 없음:", caption_json)
     return _model
 
 
-# ── 웹캠 보정 ─────────────────────────────────────────────
 def denoise_webcam(img_bgr):
-    # 1차: Gaussian blur로 고주파 제거
     blurred = cv2.GaussianBlur(img_bgr, (5, 5), sigmaX=1.2)
-    # 2차: bilateral filter로 엣지는 보존하면서 노이즈 추가 제거
     return cv2.bilateralFilter(blurred, d=5, sigmaColor=30, sigmaSpace=30)
 
 
-# ── Layer 1: Grad-CAM ─────────────────────────────────────
 def preprocess(img_bgr, size=224):
     img_rgb  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_res  = cv2.resize(img_rgb, (size, size))
-    img_norm = img_res.astype("float32") / 255.0
-    return np.expand_dims(img_norm, 0)
+    return np.expand_dims(img_res.astype("float32") / 255.0, 0)
 
 
 def get_gradcam_logit(model, img_array, conv_layer_name, logit_layer_name):
     try:
         logit_output = model.get_layer(logit_layer_name).output
     except ValueError:
-        print("⚠️", logit_layer_name, "레이어 없음")
         return np.zeros((7, 7))
-
     grad_model = tf.keras.Model(
-        inputs =model.inputs,
+        inputs=model.inputs,
         outputs=[model.get_layer(conv_layer_name).output, logit_output],
     )
     with tf.GradientTape() as tape:
@@ -108,11 +91,9 @@ def get_gradcam_logit(model, img_array, conv_layer_name, logit_layer_name):
         conv_out, pred = grad_model(inp)
         p_clipped      = tf.clip_by_value(pred[:, 0], 1e-7, 1 - 1e-7)
         logit          = tf.math.log(p_clipped / (1.0 - p_clipped))
-
     grads = tape.gradient(logit, conv_out)
     if grads is None:
         return np.zeros((7, 7))
-
     pooled  = tf.reduce_mean(grads, axis=(0, 1, 2))
     heatmap = conv_out[0] @ pooled[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
@@ -124,29 +105,40 @@ def get_gradcam_logit(model, img_array, conv_layer_name, logit_layer_name):
 def overlay_heatmap(img_bgr, heatmap, alpha=0.45):
     h, w  = img_bgr.shape[:2]
     hmr   = cv2.resize(heatmap, (w, h))
+    _cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    )
+    _gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    _faces = _cascade.detectMultiScale(_gray, scaleFactor=1.1, minNeighbors=5, minSize=(40,40))
+    if len(_faces) > 0:
+        _mask = np.zeros((h, w), dtype=np.float32)
+        _x, _y, _fw, _fh = sorted(_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+        _mx, _my = int(_fw*0.4), int(_fh*0.5)
+        _x1,_y1  = max(0,_x-_mx),    max(0,_y-_my)
+        _x2,_y2  = min(w,_x+_fw+_mx), min(h,_y+_fh+_my)
+        _mask[_y1:_y2, _x1:_x2] = 1.0
+        hmr = hmr * _mask
+        _thresh = np.percentile(hmr[hmr > 0], 70) if hmr.max() > 0 else 0
+        hmr = np.where(hmr >= _thresh, hmr, 0)
+        if hmr.max() > 0:
+            hmr = hmr / hmr.max()
     hmc   = cv2.applyColorMap(np.uint8(255 * hmr), cv2.COLORMAP_JET)
     img_r = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     hmc_r = cv2.cvtColor(hmc,     cv2.COLOR_BGR2RGB)
     return cv2.addWeighted(img_r, 1 - alpha, hmc_r, alpha, 0)
 
 
-# ── Layer 2: 수치 앵커링 ──────────────────────────────────
 def compute_pixel_features(img_bgr, mask_224=None):
     img_r = cv2.resize(img_bgr, (224, 224))
     img_g = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
-
     if mask_224 is not None and mask_224.sum() >= 16:
         lap     = cv2.Laplacian(img_g, cv2.CV_64F)
         lap_var = float(lap[mask_224].var())
-        ys, xs  = np.where(mask_224)
-        y0, y1  = int(ys.min()), int(ys.max()) + 1
-        x0, x1  = int(xs.min()), int(xs.max()) + 1
-        sub     = img_g[y0:y1, x0:x1].astype(np.float32)
     else:
         lap     = cv2.Laplacian(img_g, cv2.CV_64F)
         lap_var = float(lap.var())
-        sub     = img_g.astype(np.float32)
-
+        img_g   = img_g
+    sub      = img_g.astype(np.float32)
     f        = np.fft.fftshift(np.fft.fft2(sub))
     mag      = np.abs(f)
     h, w     = mag.shape
@@ -156,37 +148,23 @@ def compute_pixel_features(img_bgr, mask_224=None):
     d2       = (Y - cy)**2 + (X - cx)**2
     fft_high = float(mag[d2 > r**2].mean())
     fft_low  = float(mag[d2 <= r].mean())
-
-    return {
-        "laplacian": round(lap_var, 1),
-        "fft_high":  round(fft_high, 1),
-        "fft_low":   round(fft_low, 1),
-    }
+    return {"laplacian": round(lap_var, 1), "fft_high": round(fft_high, 1), "fft_low": round(fft_low, 1)}
 
 
 def interpret_anchors(stats, category="unknown"):
     base     = ANCHOR_BASELINE.get(category, ANCHOR_BASELINE["live"])
     lines    = []
     lap_diff = stats["laplacian"] - base["laplacian"]
-    if   lap_diff < -40:
-        lines.append("질감 평탄 (선명도 낮음)")
-    elif lap_diff >  40:
-        lines.append("경계선 강조 (선명도 높음)")
-    else:
-        lines.append("선명도 보통")
-
+    if   lap_diff < -40: lines.append("질감 평탄 (선명도 낮음)")
+    elif lap_diff >  40: lines.append("경계선 강조 (선명도 높음)")
+    else:                lines.append("선명도 보통")
     fft_diff = stats["fft_high"] - base["fft_high"]
-    if   fft_diff < -80:
-        lines.append("고주파 에너지 부재 (압축/재촬영 흔적)")
-    elif fft_diff >  80:
-        lines.append("고주파 에너지 과잉 (경계 아티팩트)")
-    else:
-        lines.append("고주파 에너지 정상")
-
+    if   fft_diff < -80: lines.append("고주파 에너지 부재 (압축/재촬영 흔적)")
+    elif fft_diff >  80: lines.append("고주파 에너지 과잉 (경계 아티팩트)")
+    else:                lines.append("고주파 에너지 정상")
     return " / ".join(lines)
 
 
-# ── Layer 3: 자연어 설명 합성 ─────────────────────────────
 def get_llava_caption(img_path, category=None):
     stem = Path(img_path).stem if img_path else ""
     if stem in _caption_db:
@@ -198,80 +176,33 @@ def get_llava_caption(img_path, category=None):
 
 def build_xai_text(verdict, spoof_prob, spoof_type_idx,
                    anchor_stats, anchor_interp,
-                   llava_caption="", illum_idx=None, env_idx=None,
-                   webcam=False):
-    lines = []
+                   llava_caption="", illum_idx=None, env_idx=None, webcam=False):
+    lines      = []
     verdict_ko = "🟢 실제 얼굴 (REAL)" if verdict == "REAL" else "🔴 위조 공격 감지 (FAKE)"
     spoof_ko   = SPOOF_KO.get(spoof_type_idx, "유형 " + str(spoof_type_idx))
-
     lines.append("**" + verdict_ko + "** — 신뢰도 " + "{:.1%}".format(spoof_prob))
     lines.append("**예측 공격 유형:** " + spoof_ko)
-    if webcam:
-        lines.append("**입력:** 웹캠 (고주파 노이즈 보정 적용)")
-    if illum_idx is not None:
-        lines.append("**조명:** " + ILLUMINATION_NAMES.get(illum_idx, "알 수 없음"))
-    if env_idx is not None:
-        lines.append("**환경:** " + ENVIRONMENT_NAMES.get(env_idx, "알 수 없음"))
+    if webcam: lines.append("**입력:** 웹캠 (고주파 노이즈 보정 적용)")
     lines.append("")
-
-    lines.append("**[Layer 1 — Grad-CAM]** 어디를 봤는가")
-    lines.append("> 히트맵: 이마·눈 주변 고활성 영역 (logit 기반, sigmoid 포화 해결)")
-    lines.append("")
-
-    lap_val = anchor_stats["laplacian"]
-    fft_val = anchor_stats["fft_high"]
-    lines.append("**[Layer 2 — 수치 앵커링]** 얼마나 강한 신호인가")
-    lines.append("> Laplacian 분산: **" + str(lap_val) + "**  |  FFT 고주파: **" + str(fft_val) + "**")
-    if webcam:
-        lines.append("> ※ 수치는 보정 전 원본 웹캠 기준")
+    lines.append("**[Layer 2 — 수치 앵커링]**")
+    lines.append("> Laplacian: **" + str(anchor_stats["laplacian"]) + "**  |  FFT 고주파: **" + str(anchor_stats["fft_high"]) + "**")
     lines.append("> 해석: " + anchor_interp)
     hint = SPOOF_EN_HINT.get(spoof_type_idx)
-    if hint and verdict == "FAKE":
-        lines.append("> ✏️ " + hint)
+    if hint and verdict == "FAKE": lines.append("> ✏️ " + hint)
     lines.append("")
-
-    lines.append("**[Layer 3 — VLM 자연어 분석]** 왜 그렇게 판단했는가")
-    if llava_caption:
-        lines.append("> " + llava_caption)
-    else:
-        lines.append("> *(해당 이미지 캡션 없음 — 배치 캡셔닝 결과 로드 필요)*")
-
+    lines.append("**[Layer 3 — VLM 자연어 분석]**")
+    if llava_caption: lines.append("> " + llava_caption)
+    else: lines.append("> *(캡션 없음)*")
     return "\n".join(lines)
 
 
-# ── 통합 진입점 ───────────────────────────────────────────
 def explain(img_bgr, img_path=None, category=None,
-            threshold=0.5, heatmap_threshold=0.4,
+            threshold=0.75, heatmap_threshold=0.4,
             webcam=False, illum_idx=None, env_idx=None):
-    """
-    3계층 XAI 파이프라인 통합 함수
-
-    Parameters
-    ----------
-    img_bgr          : np.ndarray  — cv2.imread 결과 (BGR)
-    img_path         : str | None  — LLaVA 캡션 매칭용 파일 경로
-    category         : str | None  — 정답 카테고리 (스모크 테스트 시)
-    threshold        : float       — FAKE 판정 임계값 (기본 0.5)
-    heatmap_threshold: float       — Grad-CAM 활성 마스크 임계값 (기본 0.4)
-    webcam           : bool        — True시 Gaussian blur로 고주파 노이즈 보정 후 모델 입력
-                                     수치 앵커링은 보정 전 원본 기준 유지
-
-    Returns
-    -------
-    dict: verdict, spoof_prob, spoof_type_idx, spoof_type_name,
-          heatmap_raw, heatmap_overlay,
-          anchor_stats, anchor_interp,
-          llava_caption, xai_text
-    """
     model = load_model_once()
-
-    # 수치용 원본 / 모델 입력용 (웹캠이면 보정본)
     img_for_stats = img_bgr
     img_for_model = denoise_webcam(img_bgr) if webcam else img_bgr
-
-    inp = preprocess(img_for_model)
-
-    # ── 모델 예측 ──────────────────────────────────────────
+    inp   = preprocess(img_for_model)
     preds = model.predict(inp, verbose=0)
     if isinstance(preds, list) and len(preds) >= 2:
         spoof_prob     = float(preds[0][0][0])
@@ -279,40 +210,23 @@ def explain(img_bgr, img_path=None, category=None,
     else:
         spoof_prob     = float(preds[0][0]) if hasattr(preds[0], "__len__") else float(preds[0])
         spoof_type_idx = 0
-
     verdict         = "FAKE" if spoof_prob >= threshold else "REAL"
     spoof_type_name = SPOOF_KO.get(spoof_type_idx, "유형 " + str(spoof_type_idx))
-
-    # ── Layer 1: Grad-CAM (보정본 기준) ───────────────────
     heatmap_raw     = get_gradcam_logit(model, inp, TARGET_LAYER, LOGIT_LAYER)
-    heatmap_overlay = overlay_heatmap(img_bgr, heatmap_raw)  # 오버레이는 원본에
-
-    # ── Layer 2: 수치 앵커링 (원본 기준) ──────────────────
-    cat_key  = {1: "print", 2: "replay", 3: "mask"}.get(spoof_type_idx, "live")
-    hm_224   = cv2.resize(heatmap_raw, (224, 224))
-    mask_224 = hm_224 >= heatmap_threshold
-
-    anchor_stats  = compute_pixel_features(img_for_stats, mask_224 if mask_224.any() else None)
-    anchor_interp = interpret_anchors(anchor_stats, category=cat_key)
-
-    # ── Layer 3: LLaVA 캡션 + 자연어 합성 ────────────────
-    llava_caption = get_llava_caption(img_path, category=category) if img_path else ""
-    xai_text = build_xai_text(
-        verdict, spoof_prob, spoof_type_idx,
-        anchor_stats, anchor_interp,
-        llava_caption, illum_idx, env_idx,
-        webcam=webcam,
-    )
-
+    heatmap_overlay = overlay_heatmap(img_bgr, heatmap_raw)
+    cat_key         = {1: "print", 2: "replay", 3: "mask"}.get(spoof_type_idx, "live")
+    hm_224          = cv2.resize(heatmap_raw, (224, 224))
+    mask_224        = hm_224 >= heatmap_threshold
+    anchor_stats    = compute_pixel_features(img_for_stats, mask_224 if mask_224.any() else None)
+    anchor_interp   = interpret_anchors(anchor_stats, category=cat_key)
+    llava_caption   = get_llava_caption(img_path, category=category) if img_path else ""
+    xai_text        = build_xai_text(verdict, spoof_prob, spoof_type_idx,
+                                     anchor_stats, anchor_interp, llava_caption,
+                                     illum_idx, env_idx, webcam=webcam)
     return {
-        "verdict"        : verdict,
-        "spoof_prob"     : spoof_prob,
-        "spoof_type_idx" : spoof_type_idx,
-        "spoof_type_name": spoof_type_name,
-        "heatmap_raw"    : heatmap_raw,
-        "heatmap_overlay": heatmap_overlay,
-        "anchor_stats"   : anchor_stats,
-        "anchor_interp"  : anchor_interp,
-        "llava_caption"  : llava_caption,
-        "xai_text"       : xai_text,
+        "verdict": verdict, "spoof_prob": spoof_prob,
+        "spoof_type_idx": spoof_type_idx, "spoof_type_name": spoof_type_name,
+        "heatmap_raw": heatmap_raw, "heatmap_overlay": heatmap_overlay,
+        "anchor_stats": anchor_stats, "anchor_interp": anchor_interp,
+        "llava_caption": llava_caption, "xai_text": xai_text,
     }

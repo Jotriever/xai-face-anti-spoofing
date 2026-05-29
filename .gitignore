@@ -1,12 +1,14 @@
-cat > .gitignore << 'EOF'
-data/
-samples/
-tmp_dl/
-tmp_label/
-kaggle.json
 __pycache__/
 *.pyc
-.ipynb_checkpoints/
-*.pb
+*.pyo
+.env
+.streamlit/secrets.toml
+data/cropped/
+data/webcam_live/
+data/my_test_images/
+data/my_mask_images/
+results/
+reports/
+*.log
 .DS_Store
-EOF
+Thumbs.db
