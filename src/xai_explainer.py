@@ -105,23 +105,34 @@ def get_gradcam_logit(model, img_array, conv_layer_name, logit_layer_name):
 def overlay_heatmap(img_bgr, heatmap, alpha=0.45):
     h, w  = img_bgr.shape[:2]
     hmr   = cv2.resize(heatmap, (w, h))
-    _cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    )
-    _gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    _faces = _cascade.detectMultiScale(_gray, scaleFactor=1.1, minNeighbors=5, minSize=(40,40))
-    if len(_faces) > 0:
-        _mask = np.zeros((h, w), dtype=np.float32)
-        _x, _y, _fw, _fh = sorted(_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
-        _mx, _my = int(_fw*0.4), int(_fh*0.5)
-        _x1,_y1  = max(0,_x-_mx),    max(0,_y-_my)
-        _x2,_y2  = min(w,_x+_fw+_mx), min(h,_y+_fh+_my)
-        _mask[_y1:_y2, _x1:_x2] = 1.0
-        hmr = hmr * _mask
-        _thresh = np.percentile(hmr[hmr > 0], 70) if hmr.max() > 0 else 0
-        hmr = np.where(hmr >= _thresh, hmr, 0)
-        if hmr.max() > 0:
-            hmr = hmr / hmr.max()
+
+    # ── 얼굴 마스크 적용 ──────────────────────────────────
+    _xml = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "haarcascade_frontalface_default.xml")
+    if not os.path.exists(_xml):
+        _xml = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    
+    _cascade = cv2.CascadeClassifier()
+    _cascade.load(_xml)
+    
+    if not _cascade.empty():
+        # 기존 얼굴 마스크 로직
+        _gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        _faces = _cascade.detectMultiScale(_gray, scaleFactor=1.1,
+                                           minNeighbors=5, minSize=(40,40))
+        if len(_faces) > 0:
+            _mask = np.zeros((h, w), dtype=np.float32)
+            _x, _y, _fw, _fh = sorted(_faces, key=lambda f: f[2]*f[3], reverse=True)[0]
+            _mx, _my = int(_fw*0.4), int(_fh*0.5)
+            _x1,_y1  = max(0,_x-_mx),    max(0,_y-_my)
+            _x2,_y2  = min(w,_x+_fw+_mx), min(h,_y+_fh+_my)
+            _mask[_y1:_y2, _x1:_x2] = 1.0
+            hmr = hmr * _mask
+            _thresh = np.percentile(hmr[hmr > 0], 70) if hmr.max() > 0 else 0
+            hmr = np.where(hmr >= _thresh, hmr, 0)
+            if hmr.max() > 0:
+                hmr = hmr / hmr.max()
+
     hmc   = cv2.applyColorMap(np.uint8(255 * hmr), cv2.COLORMAP_JET)
     img_r = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     hmc_r = cv2.cvtColor(hmc,     cv2.COLOR_BGR2RGB)

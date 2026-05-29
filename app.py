@@ -64,9 +64,10 @@ def get_models():
 
 @st.cache_resource
 def get_cascade():
-    path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    # 현재 작업 디렉토리 기준으로 XML 찾기
+    path = os.path.join(os.getcwd(), "haarcascade_frontalface_default.xml")
     cascade = cv2.CascadeClassifier()
-    cascade.load(path)  # load() 방식으로 변경
+    cascade.load(path)
     if cascade.empty():
         raise RuntimeError(f"Cascade 로드 실패: {path}")
     return cascade
@@ -233,8 +234,11 @@ if mode == "📤 직접 업로드 (크롭 포함)":
             col1, col2, col3 = st.columns([4, 1, 4])
             with col1:
                 st.markdown("**① 업로드 원본**")
-                st.image(cv2.cvtColor(cv2.resize(img_raw, (224, 224)), cv2.COLOR_BGR2RGB),
-                         caption=f"{img_raw.shape[1]}×{img_raw.shape[0]}", use_container_width=True)
+                st.image(
+                    cv2.cvtColor(img_raw, cv2.COLOR_BGR2RGB),  # resize 제거
+                    caption=f"{img_raw.shape[1]}×{img_raw.shape[0]}",
+                    use_container_width=True,
+                )
             with st.spinner("얼굴 감지 중..."):
                 img_cropped, detected = crop_face(img_raw)
             with col2:
