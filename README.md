@@ -123,9 +123,6 @@ Grad-CAM   Laplacian + FFT
 
 ## 🚀 실행 방법 (How to Run)
 
-### Streamlit Cloud (권장)
-앱 URL: `https://your-app-url.streamlit.app`
-
 ### 로컬 실행
 ```bash
 # 1. 레포지토리 클론
